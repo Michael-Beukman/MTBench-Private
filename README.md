@@ -64,30 +64,6 @@ In this repo, we provide two task sets, Meta-World and Parkour, which have base 
 
 To add a new task to Meta-World, add it to the task id to task map in `isaacgymenvs/tasks/franka/vec_task/franka_base.py` and implement the task with the required functions (`create_envs`, `compute_observations`, `compute_reward`, and `reset_env`) in a new file in the `task_fns` folder. 
 
-### Basic Usage
-```python
-import isaacgym
-import isaacgymenvs
-import torch
-
-num_envs = 4096
-
-envs = isaacgymenvs.make(
-    seed=0, 
-    task="meta-world-v2", 
-    num_envs=num_envs, 
-    sim_device="cuda:0",
-    rl_device="cuda:0",   
-    headless=True,
-)
-print("Observation space is", envs.observation_space)
-print("Action space is", envs.action_space)
-obs = envs.reset()
-for _ in range(20):
- random_actions = 2.0 * torch.rand((num_envs,) + envs.action_space.shape, device = 'cuda:0') - 1.0
- envs.step(random_actions)
-```
-
 
 ## MTRL Approaches 🐙
 
@@ -116,11 +92,15 @@ for _ in range(20):
 | PQN | https://arxiv.org/abs/2407.04811 | [Algorithm](isaacgymenvs/learning/pqn_agent.py#L613); [Architecture](isaacgymenvs/learning/networks/pq_builder.py)
 | PQN + Soft-Modularization | - | [SoftModularizedPQBuilder](isaacgymenvs/learning/networks/soft_modularized_pq_builder.py)
 
+### MT-FastTD3
+| Approach | Reference | Location |
+|-------------|-------------|-------------|
+| FastTD3 | https://arxiv.org/abs/2505.22642 | [FastTD3Agent](isaacgymenvs/learning/td3_agent.py#L24)
+
 ### MT-GRPO
 | Approach | Reference | Location |
 |-------------|-------------|-------------|
 | GRPO | https://arxiv.org/abs/2402.03300 | [MTGRPOAgent](isaacgymenvs/learning/grpo_agent.py#L46)
-| GRPO + FAMO| - | [FAMOGRPOAgent](isaacgymenvs/learning/grpo_agent.py#L431)
 
 ## Extending the Benchmark 📝
 By simply adding agents in the learning folder, you can easily extend the benchmark with new MTRL approaches.
@@ -131,6 +111,77 @@ By simply adding networks in the learning/networks folder, you can easily extend
 All experimental results are reproducible from the bash executables in the ```exec``` folder. The bash scripts are organized by environment and MTRL approach, so you can easily find the one you need. They all call ```train.py```, which means the key arguments are below. To reproduce any PPO MTRL approach ```x``` in evaluation setting ```y```, simply run the following command:
 
 ``` exec/ppo_exps/y/x.sh ```
+
+## Don't like RLGames?
+
+Instantiate the domain of your choice with the below Gym wrapper and use your own RL code. Code adapted from FastTD3
+
+```python
+class MTBenchEnv:
+    def __init__(
+        self,
+        task_name: str,
+        device_id: int,
+        num_envs: int,
+        seed: int,
+    ):
+        def get_task_counts(task_name):
+            num_tasks = 10 if task_name == "meta-world-v2-mt10" else 50
+            base_count = num_envs // num_tasks
+            remainder = num_envs % num_tasks
+            subgroup_counts = [base_count + 1] * remainder + [base_count] * (num_tasks - remainder)
+            return subgroup_counts
+
+        task_config = MTBENCH_MW2_CONFIG.copy()
+        if task_name == "meta-world-v2-mt10":
+            self.num_tasks = 10
+            task_config["env"]["tasks"] = [4, 16, 17, 18, 28, 31, 38, 40, 48, 49]
+            task_config["env"]["taskEnvCount"] = get_task_counts(task_name)
+        elif task_name == "meta-world-v2-mt50":
+            task_config["env"]["tasks"] = list(range(self.num_tasks))
+            task_config["env"]["taskEnvCount"] = get_task_counts(task_name)
+        else:
+            raise ValueError(f"Unsupported task name: {task_name}")
+
+        task_config["env"]["numEnvs"] = num_envs
+        task_config["env"]["numObservations"] = 39 + self.num_tasks
+        task_config["env"]["seed"] = seed
+
+        env_cfg = {"task": task_config}
+        env_cfg = OmegaConf.create(env_cfg)
+
+        self.env = isaacgymenvs.make(
+            task=env_cfg.task.name,
+            num_envs=num_envs,
+            sim_device=f"cuda:{device_id}",
+            rl_device=f"cuda:{device_id}",
+            seed=seed,
+            headless=True,
+            cfg=env_cfg,
+        )
+
+        self.num_envs = num_envs
+        self.num_obs = self.env.observation_space.shape[0]
+        self.num_actions = self.env.action_space.shape[0]
+        self.max_episode_steps = self.env.max_episode_length
+
+    def reset(self) -> torch.Tensor:
+        """Reset the environment."""
+        with torch.no_grad():
+            self.env.reset_idx(torch.arange(self.num_envs, device=self.env.device))
+            self.env.cumulatives["rewards"][:] = 0
+            self.env.cumulatives["success"][:] = 0
+            obs_dict = self.env.reset()
+            return obs_dict["obs"].detach()
+
+    def step(
+        self, actions: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+        """Step the environment."""
+        with torch.no_grad():
+            obs_dict, rew, dones, infos = self.env.step(actions.detach())
+            return obs_dict["obs"].detach(), rew.detach(), dones.detach(), infos
+```
 
 ### Loading trained models // Checkpoints
 
@@ -160,7 +211,7 @@ Key arguments to the `train.py` script are:
 
 * `task=TASK` - selects which task to use. Any of `meta-world-v2`, `go1-benchmark` (these correspond to the config for each environment in the folder `isaacgymenvs/cfg/task`)
 * `train=TRAIN` - selects which training config to use.
-* `task_id` - selects which task IDs to use for training. This is a comma-separated list of integers, e.g. `task_id=[5,8,1]` will select the first three tasks in task map in the base .
+* `task_id` - selects which task IDs to use for training. This is a comma-separated list of integers, e.g. `task_id=[5,8,1]` will layout tasks 5,8, and 1 in that order. The number of task ids must match the number of task counts specified in `task_counts`.
 * `task_counts` - an array of integers that specifies how many environments to use for each task. For example, `task_counts=[512, 512, 512, ... ]` will use 512 environments for each of the first three tasks. The number of task counts must match the number of tasks specified in `task_id`. 
 * `num_envs=NUM_ENVS` - the number of total parallel environments to use and must match the sum of the task counts specified in `task_counts`. For example, if you have 10 tasks with 512 environments each, you would set `num_envs=5120`.
 * `seed=SEED` - sets a seed value for randomizations, and overrides the default seed set up in the task config
@@ -204,11 +255,11 @@ Please cite this work as:
 
 ```
 @inproceedings{
-joshi2025benchmarking,
-title={Benchmarking Massively Parallelized Multi-Task Reinforcement Learning for Robotics Tasks},
-author={Viraj Joshi and Zifan Xu and Bo Liu and Peter Stone and Amy Zhang},
-booktitle={Reinforcement Learning Conference},
-year={2025},
-url={https://openreview.net/forum?id=z0MM0y20I2}
+    joshi2025benchmarking,
+    title={Benchmarking Massively Parallelized Multi-Task Reinforcement Learning for Robotics Tasks},
+    author={Viraj Joshi and Zifan Xu and Bo Liu and Peter Stone and Amy Zhang},
+    booktitle={Reinforcement Learning Conference},
+    year={2025},
+    url={https://openreview.net/forum?id=z0MM0y20I2}
 }
 ```
