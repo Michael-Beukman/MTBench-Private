@@ -1,6 +1,6 @@
 #!/bin/bash
 
-for i in 42 43 44 45 46 47 48 49 50 51
+for i in 42
 do
 
 	cmd="python isaacgymenvs/train.py \
@@ -11,7 +11,7 @@ do
 		reward_scale=100 \
 		termination_on_success=False \
 		experiment=0123_MT10_ppo_vanilla \
-		train=meta-world-mt-PPO-Vanilla \
+		train=meta-world-mt10-vanilla-PPO \
 		seed=$i \
 		wandb_activate=False \
 		wandb_entity=meta-world \
