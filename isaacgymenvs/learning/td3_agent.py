@@ -6,7 +6,7 @@ import os
 import torch 
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
-from torch.amp import autocast, GradScaler
+# from torch.amp import autocast, GradScaler
 
 from rl_games.algos_torch import torch_ext
 from rl_games.common import vecenv
