@@ -38,6 +38,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import logging
 import os
 from datetime import datetime
+os.environ["WANDB_DISABLE_SERVICE"] = "True"
 
 # noinspection PyUnresolvedReferences
 import isaacgym
